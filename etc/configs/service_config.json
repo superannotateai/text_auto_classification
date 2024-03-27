@@ -1,0 +1,9 @@
+{
+    "SA_CONFIG_PATH": "etc/configs/SA_config.ini",
+    "SA_PROJECT_NAME": "Project Name",
+    "SA_FOLDERS": ["Folder1", "Folder2"],
+    "AWS_ACCESS_KEY_ID": "AWS ACCESS KEY",
+    "AWS_SECRET_ACCESS_KEY": "AWS SECRET ACCESS KEY",
+    "AWS_URL_FOR_DATA_DOWNLOADS": "S3 URL",
+    "AWS_URL_TO_MODEL_UPLOAD": "S3 URL"
+}
