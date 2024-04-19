@@ -6,6 +6,8 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from text_auto_classification.utils.model.model_saver import ModelSaver
 
+logger = logging.getLogger("uvicorn")
+
 
 class S3ModelSaver(ModelSaver):
     """Class for saving model and tokenizer checkpoints to S3 bucket
@@ -42,4 +44,4 @@ class S3ModelSaver(ModelSaver):
                 os.path.join(self.s3_path, file)
             )
         
-        logging.info(f"Model and tokenizer were saved successfully in S3 by following path: {os.path.join(self.s3_bucket, self.s3_path)}")
+        logger.info(f"Model and tokenizer were saved successfully in S3 by following path: {os.path.join(self.s3_bucket, self.s3_path)}")

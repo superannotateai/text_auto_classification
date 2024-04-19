@@ -1,6 +1,7 @@
 import json
 import logging
 import shutil
+from typing import Callable
 
 import boto3
 import numpy as np
@@ -21,7 +22,7 @@ from text_auto_classification.utils.data.sa_client_manager import SAClientManage
 from text_auto_classification.utils.model.s3_model_saver import S3ModelSaver
 from text_auto_classification.utils.task_status import TaskInfo, TaskStatus
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn")
 
 
 class SAAutoClassifier():
@@ -95,106 +96,118 @@ class SAAutoClassifier():
         :param task_info: Task information object.
         :type task_info: TaskInfo
         """
-        logger.info("Start auto training and predict")
+        try:
+            logger.info("Start Auto-Classification Pipeline")
+                
             
-        
-        task_info.status = TaskStatus.DOWNLOADING_DATA # Update the task status
-        logger.info("Downloading and prcessing data")
+            task_info.status = TaskStatus.DOWNLOADING_DATA # Update the task status
+            logger.info("Downloading and prcessing data")
 
-        data = self._download_and_prepare_data()
+            data = self._download_and_prepare_data()
 
-        train_data = [rec for rec in data if rec["status"] == "Completed"]
-        data_for_predict = [rec for rec in data if rec["status"] != "Completed"]
-        
-        # Extract classes
-        classes = {lab for rec in train_data for lab in rec["label"]}
+            train_data = [rec for rec in data if rec["status"] == "Completed"]
+            data_for_predict = [rec for rec in data if rec["status"] != "Completed"]
 
-        # Change labels to ids
-        lab2id = {lab:i for i, lab in enumerate(classes)}
-        train_data = list(map(lambda item: {**item, "label": lab2id[item["label"][0]]}, train_data))
+            logger.info(f"{len(train_data)} completed items were downloading")
+            logger.info(f"{len(data_for_predict)} items for prediction were downloading")
+            
+            # Extract classes
+            classes = list({lab for rec in train_data for lab in rec["label"]})
+            logger.info(f"The output layer will have {len(classes)} outputs, for each of the annotated classes:\n{classes}")
 
-        # Init dataset
-        dataset = Dataset.from_list(train_data)
+            # Change labels to ids
+            lab2id = {lab:i for i, lab in enumerate(classes)}
+            train_data = list(map(lambda item: {**item, "label": lab2id[item["label"][0]]}, train_data))
 
-        # Setup special type for labels
-        new_features = dataset.features.copy()
-        new_features["label"] = ClassLabel(names=["Negative", "Positive"])
-        dataset = dataset.cast(new_features)
+            # Init dataset
+            dataset = Dataset.from_list(train_data)
 
-        # Split into train and validation
-        dataset = dataset.train_test_split(
-            test_size=self.training_config["validation_ratio"],
-            stratify_by_column="label",
-            seed=19
-        )
+            # Setup special type for labels
+            new_features = dataset.features.copy()
+            new_features["label"] = ClassLabel(names=classes)
+            dataset = dataset.cast(new_features)
 
-        # Init tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.training_config["pretrain_model"])
-        tokenize = lambda text: tokenizer.batch_encode_plus(
-            text,
-            add_special_tokens=True,
-            max_length=self.training_config["max_length"],
-            pad_to_max_length=True,
-            return_tensors="pt"
-        )
-
-        tokenized_dataset = dataset.map(lambda x: tokenize(x["text"]), batched=True)
-        
-        model = AutoModelForSequenceClassification.from_pretrained(
-            pretrained_model_name_or_path=self.training_config["pretrain_model"],
-            problem_type="single_label_classification",
-            num_labels=len(classes),
-            id2label={v:k for k,v in lab2id.items()},
-            label2id=lab2id
-        )
-
-        training_args = TrainingArguments(
-            output_dir="output_dir",
-            evaluation_strategy="epoch",
-            per_device_train_batch_size=self.training_config["per_device_train_batch_size"],
-            per_device_eval_batch_size=self.training_config["per_device_eval_batch_size"],
-            gradient_accumulation_steps=self.training_config["gradient_accumulation_steps"],
-            learning_rate=self.training_config["learning_rate"],
-            weight_decay=self.training_config["weight_decay"],
-            num_train_epochs=self.training_config["num_train_epochs"],
-            lr_scheduler_type=self.training_config["lr_scheduler_type"],
-            warmup_ratio=self.training_config["warmup_ratio"],
-            logging_steps=100,
-            save_strategy="epoch",
-            load_best_model_at_end=True,
-            optim=self.training_config["optim"],
-            gradient_checkpointing=True
-        )
-
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_dataset["train"],
-            eval_dataset=tokenized_dataset["test"],
-            compute_metrics=self.compute_metrics
-        )
-
-        task_info.status = TaskStatus.MODEL_TRAINING # Update the task status
-        logger.info("Start Training")
-
-        trainer.train()
-
-        logger.info("Prediction")
-        if data_for_predict:
-            predict_data = self._predict(
-                tokenizer,
-                model,
-                data_for_predict
+            # Split into train and validation
+            dataset = dataset.train_test_split(
+                test_size=self.training_config["validation_ratio"],
+                stratify_by_column="label",
+                seed=19
             )
-            self.sa_clinet_manager.upload_annotations(predict_data)
 
-        self.s3_model_saver.save(model, tokenizer)
+            # Init tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(self.training_config["pretrain_model"])
+            tokenize = lambda text: tokenizer.batch_encode_plus(
+                text,
+                add_special_tokens=True,
+                padding=True,
+                truncation=True,
+                max_length=self.training_config["max_length"],
+                return_tensors="pt"
+            )
 
-        # Remove all temporary data
-        shutil.rmtree("output_dir")
+            tokenized_dataset = dataset.map(lambda x: tokenize(x["text"]), batched=True)
+            
+            model = AutoModelForSequenceClassification.from_pretrained(
+                pretrained_model_name_or_path=self.training_config["pretrain_model"],
+                problem_type="single_label_classification",
+                num_labels=len(classes),
+                id2label={v:k for k,v in lab2id.items()},
+                label2id=lab2id
+            )
 
-        task_info.status = TaskStatus.COMPLETED # Update the task status
-        logger.info("Finish")
+            training_args = TrainingArguments(
+                output_dir="output_dir",
+                evaluation_strategy="epoch",
+                per_device_train_batch_size=self.training_config["per_device_train_batch_size"],
+                per_device_eval_batch_size=self.training_config["per_device_eval_batch_size"],
+                gradient_accumulation_steps=self.training_config["gradient_accumulation_steps"],
+                learning_rate=self.training_config["learning_rate"],
+                weight_decay=self.training_config["weight_decay"],
+                num_train_epochs=self.training_config["num_train_epochs"],
+                lr_scheduler_type=self.training_config["lr_scheduler_type"],
+                warmup_ratio=self.training_config["warmup_ratio"],
+                logging_steps=100,
+                save_strategy="epoch",
+                save_total_limit=3,
+                load_best_model_at_end=True,
+                optim=self.training_config["optim"],
+                gradient_checkpointing=True
+            )
+
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_dataset["train"],
+                eval_dataset=tokenized_dataset["test"],
+                compute_metrics=self.prepare_compute_metrics_func(len(classes))
+            )
+
+            task_info.status = TaskStatus.MODEL_TRAINING # Update the task status
+            logger.info("Start Training")
+
+            trainer.train()
+
+            task_info.status = TaskStatus.PREDICTING # Update the task status
+            logger.info("Start prediction stage")
+            if data_for_predict:
+                predict_data = self._predict(
+                    tokenizer,
+                    model,
+                    data_for_predict
+                )
+                self.sa_clinet_manager.upload_annotations(predict_data)
+
+            self.s3_model_saver.save(model, tokenizer)
+
+            # Remove all temporary data
+            shutil.rmtree("output_dir")
+
+            task_info.status = TaskStatus.COMPLETED # Update the task status
+            logger.info("Finish full Pipeline")
+
+        except Exception as e:
+            task_info.status = TaskStatus.FAILED # Update the task status
+            logger.exception("Failed during pipeline")
 
 
     def _predict(
@@ -236,26 +249,46 @@ class SAAutoClassifier():
     
 
     @staticmethod
-    def compute_metrics(eval_pred) -> dict:
-        """Static method for calculating metric
-        
-        :param eval_pred: Evaluation prediction.
-        :return: Dictionary containing calculated metrics.
-        :rtype: dict
+    def prepare_compute_metrics_func(count_classes: int) -> Callable:
+        """Static method for creation compute metrics functions
+            
+        :param count_classes: Count classes.
+        :type count_classes: int
+        :return: Function for calculating metric.
+        :rtype: Callable
         """
-        logits, labels = eval_pred
-        predictions = np.argmax(logits, axis=-1)
-        acc = accuracy_score(labels, predictions)
-        f1 = f1_score(labels, predictions)
-        return {"accuracy": acc, "f1": f1}
+        if count_classes == 2:
+            average_param_f1 = "binary"
+        else:
+            average_param_f1 = "micro"
+        
+        def compute_metrics(eval_pred) -> dict:
+            """Function for calculating metric
+            
+            :param eval_pred: Evaluation prediction.
+            :return: Dictionary containing calculated metrics.
+            :rtype: dict
+            """
+            logits, labels = eval_pred
+            predictions = np.argmax(logits, axis=-1)
+            acc = accuracy_score(labels, predictions)
+            f1 = f1_score(labels, predictions, average=average_param_f1)
+            return {"accuracy": acc, "f1": f1}
+        
+        return compute_metrics
 
 
 if __name__ == "__main__":
-    with open("etc/configs/service_config.json") as f:
+    from text_auto_classification.utils.task_status import TaskInfo
+
+
+    with open("etc/my_configs/service_config.json") as f:
         general_conf = json.load(f)
 
-    with open("etc/configs/train_config.json") as f:
+    with open("etc/my_configs/train_config.json") as f:
         train_conf = json.load(f)
 
-    autoclassifier = SAAutoClassifier(general_conf)
-    autoclassifier.train_predict(train_conf)
+
+    task_info = TaskInfo()
+    autoclassifier = SAAutoClassifier(general_conf, train_conf)
+    autoclassifier.train_predict(task_info)

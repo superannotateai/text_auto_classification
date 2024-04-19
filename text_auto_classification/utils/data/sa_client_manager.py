@@ -1,12 +1,11 @@
-import json
+
 import logging
 import os
-import shutil
 import time
 
 from superannotate import SAClient
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn")
 
 
 class SAClientManager():
@@ -40,68 +39,44 @@ class SAClientManager():
             The record is expected to contain following keys: ``folder``, ``item_id``, ``label``
         :rtype: list[dict]
         """
-        # Dowload to local storage
-        path_to_annotations = "data/annotations"
-
-        if not os.path.exists(path_to_annotations):
-            os.makedirs(path_to_annotations)
-
         annotations = []
         for attempt in range(5):
-
-            self.sa_client.prepare_export(
-                project=self.project_name,
-                folder_names=self.folders if self.folders else ["root"]
-            )
-            exports = self.sa_client.get_exports(project=self.project_name)
-
-            self.sa_client.download_export(
-                project=self.project_name,
-                export=exports[0],
-                folder_path=path_to_annotations
-            )
-
-            # Read local saved files and transform
-            temp_path_not_found = None
-
+            
             for folder in self.folders if self.folders else [None]:
                 
-                temp_path = os.path.join(path_to_annotations, folder) \
-                    if folder else path_to_annotations
+                temp_path = os.path.join(self.project_name, folder) \
+                    if folder else self.project_name
                 
-                if not os.path.exists(temp_path):
-                    temp_path_not_found = temp_path
-                    break
+                temp_items = self.sa_client.search_items(
+                    project=temp_path,
+                )
                 
-                for file in os.listdir(temp_path):
+                temp_annotations = self.sa_client.get_annotations(
+                    project=temp_path, 
+                    items=[item["name"] for item in temp_items]
+                )
 
-                    annotation_path = os.path.join(os.path.join(temp_path, file))
-                    with open(annotation_path) as f:
-                        annotation = json.load(f)
+                for ann in temp_annotations:
                     
                     labels = [
-                        instance["className"] for instance in annotation["instances"]
+                        instance["className"] for instance in ann["instances"]
                         if instance["type"] == "tag"
                     ]
 
                     record = {
                         "folder": folder,
-                        "item_id": annotation["metadata"]["name"],
+                        "item_id": ann["metadata"]["name"],
                         "label": labels if labels else None,
-                        "status": annotation["metadata"]["status"]
+                        "status": ann["metadata"]["status"]
                     }
 
                     annotations.append(record)
                 
-            if temp_path_not_found is None:
+            if annotations:
                 break
             else:
-                annotations = []
-                logger.warning(f"Failed to prepare an export. Attempt {attempt} out of 5. Path not found: {temp_path_not_found}")
+                logger.warning(f"Failed to downloading annotations. Attempt {attempt} out of 5.")
                 time.sleep(60)
-            
-        # Remove all temporary data
-        shutil.rmtree(path_to_annotations)
         
         if not annotations:
             raise Exception("Failed to prepare an export")
@@ -118,12 +93,11 @@ class SAClientManager():
         """
         for folder in self.folders if self.folders else [None]:
 
-            temp_annotations, items = [], []
+            temp_annotations = []
             for record in dataset:
                 if record["folder"] != folder:
                     continue
                 
-                items.append(record["item_id"])
                 temp_annotations.append({
                     "metadata": {
                         "name": record["item_id"]
@@ -131,7 +105,7 @@ class SAClientManager():
                     "instances": [{
                         "type": "tag",
                         "className": record["label"],
-                        "probabylity": record["score"]*100 # Scale scores from 0 to 100
+                        "probability": record["score"]*100 # Scale scores from 0 to 100
                     }]
                 })
 
@@ -139,14 +113,35 @@ class SAClientManager():
                 if folder else self.project_name
 
             # Upload new annotation to platform
-            self.sa_client.upload_annotations(
+            res = self.sa_client.upload_annotations(
                 project=temp_path,
                 annotations=temp_annotations
             )
 
-            # Change all uploaded itmes status to `QualityCheck`
-            self.sa_client.set_annotation_statuses(
-                project=temp_path,
-                annotation_status="QualityCheck",
-                items=items
-            )
+            logger.info(f"Result of uploading annotations:\n{res}")
+
+            # Change statuses
+            if res.get("succeeded"):
+                # Find skipped items and assign them accordingly status
+                not_started_item_names = [
+                    item['name'] for item in self.sa_client.search_items(
+                        project=temp_path,
+                        annotation_status="NotStarted"
+                    )
+                ]
+                skipped_item_names = [item for item in not_started_item_names if item not in res]
+                
+                self.sa_client.set_annotation_statuses(
+                    project=temp_path,
+                    annotation_status="Skipped",
+                    items=skipped_item_names
+                )
+
+                # Assign all uploaded itmes status to `QualityCheck`
+                self.sa_client.set_annotation_statuses(
+                    project=temp_path,
+                    annotation_status="QualityCheck",
+                    items=res.get("succeeded")
+                )
+            else:
+                logger.warning("Predicted annotations weren't uploaded to the platform.")

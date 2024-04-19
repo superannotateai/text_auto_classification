@@ -1,18 +1,19 @@
 import json
+import os
+import urllib.parse
 from datetime import datetime
 from time import sleep, time
 
 import requests
 from superannotate import SAClient
 
-with open("config.ini", "w") as f:
-    f.write("""
-[DEFAULT]
-SA_TOKEN = <token>
-""") # TODO Paste your token. Read more here: https://doc.superannotate.com/docs/python-sdk#with-arguments
+SA_TOKEN = os.environ["SA_TOKEN"]
+URL = os.environ["URL"]
+# Constant for limiting the amount of data for starting Auto-Classification
+# You can change it, but by default it's set up to 100, changing the limit to less may lead to unstable results
+COUNT_ITEMS_PER_CLASS = 100
 
-sa = SAClient(config_path="config.ini")
-URL = "<API_adress>" # TODO Paste here your adress of deployd service
+sa = SAClient(token=SA_TOKEN)
 
 
 def read_status(resp):
@@ -45,8 +46,8 @@ def handler(event, context):
     # Get project name
     project_name = sa.get_project_by_id(context['after']['project_id'])['name']
     
-    # Can't run service if count completed items less than 100 per class
-    if not check_enough_data(project_name, 100):
+    # Can't run service if count completed items less than COUNT_ITEMS_PER_CLASS per class
+    if not check_enough_data(project_name, COUNT_ITEMS_PER_CLASS):
         return False
     
     # Call serice
@@ -56,6 +57,8 @@ def handler(event, context):
     
     # Loop of monitoring the service and waiting for execution
     while True:
+        resp = requests.get(urllib.parse.urljoin(URL, "text-auto-classification/status"))
+
         print(f"Status code: {read_status(resp)}, waiting")
         # Create datetime object from current timestamp
         dt = datetime.fromtimestamp(int(time()))
@@ -63,10 +66,9 @@ def handler(event, context):
         formatted_datetime = dt.strftime("%Y-%m-%d %H:%M:%S")
         print(formatted_datetime)
 
-        resp = requests.get(f'{URL}/text-auto-classification/status')
         if resp.status_code == 200 and read_status(resp) == "Completed":
             return True
-        if resp.status_code != 200:
+        if (resp.status_code == 200 and read_status(resp) == "Failed") or resp.status_code != 200:
             print(resp.status_code)
             print(read_status(resp))
             return False
@@ -75,7 +77,7 @@ def handler(event, context):
 
 
 def start_train_predict():
-    resp = requests.post(f'{URL}/text-auto-classification/train_predict')
+    resp = requests.post(urllib.parse.urljoin(URL, "text-auto-classification/train_predict"))
     
     if resp.status_code == 200:
         return True

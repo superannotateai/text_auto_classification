@@ -10,7 +10,11 @@ router = APIRouter()
     "/train_predict",
     response_model=None,
     status_code=status.HTTP_200_OK,
-    description="Train model on annotated data from SA project and auto annotate other data"
+    description="Train model on annotated data from SA project and auto annotate other data",
+    responses={
+        429: {"description": "Pipeline is already started"},
+        200: {"description": "Pipeline successfully started"}
+    }
 )
 def train_predict(
     background_tasks: BackgroundTasks,
@@ -19,11 +23,11 @@ def train_predict(
     
     task_info = meta.app.state.task
     if task_info.status != TaskStatus.NOT_STARTED and task_info.status != TaskStatus.COMPLETED:
-        return JSONResponse("Training is already started", 429)
+        return JSONResponse({"status": "Pipeline is already started"}, 429)
     
     current_app = meta.app
     classifier = current_app.classifier
 
     background_tasks.add_task(classifier.train_predict, task_info)
 
-    return JSONResponse("Process started", 200)
+    return JSONResponse({"status": "Pipeline successfully started"}, 200)

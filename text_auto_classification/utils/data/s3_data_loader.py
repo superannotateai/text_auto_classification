@@ -1,9 +1,12 @@
 import os
+import logging
 from urllib.parse import urlparse
 
 from botocore.client import BaseClient
 
 from text_auto_classification.utils.data.data_loader import DataLoader
+
+logger = logging.getLogger("uvicorn")
 
 
 class S3DataLoader(DataLoader):
@@ -40,11 +43,18 @@ class S3DataLoader(DataLoader):
         else:
             path_to_file = os.path.join(self.s3_path, item_id)
         
-        response = self.s3_client.get_object(
-            Bucket=self.s3_bucket, 
-            Key=path_to_file
-        )
+        for attempt in range(1, 6):
+            try:
+                response = self.s3_client.get_object(
+                    Bucket=self.s3_bucket, 
+                    Key=path_to_file
+                )
 
-        text = response['Body'].read().decode('utf-8')
+                text = response['Body'].read().decode('utf-8')
+                break
+            except Exception as e:
+                logger.warning(f"An error occurred while trying to download `{path_to_file}` from `{self.s3_bucket}` bucket. Attempt {attempt} out of 5\nException: {e}")
+        else:
+            raise e
 
         return text

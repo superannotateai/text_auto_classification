@@ -2,9 +2,11 @@ import argparse
 import json
 import logging
 import os
+import warnings
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.logger import logger as fastapi_logger
 from fastapi.middleware.cors import CORSMiddleware
 
 from text_auto_classification.controllers.ping import router as health_router
@@ -14,6 +16,8 @@ from text_auto_classification.controllers.train_predict import \
 from text_auto_classification.utils.auto_classifier import SAAutoClassifier
 from text_auto_classification.utils.task_status import TaskInfo
 
+# Filtering warnings from PyTorch checkpoint
+warnings.filterwarnings("ignore", module=r".*checkpoint")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -121,7 +125,7 @@ def create_app(path_to_service_conf: os.PathLike, path_to_training_conf: os.Path
 
     class EndpointFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
-            return record.getMessage().find(f"/segmentation/healthcheck") == -1
+            return record.getMessage().find(f"/text-auto-classification/healthcheck") == -1
 
     logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 

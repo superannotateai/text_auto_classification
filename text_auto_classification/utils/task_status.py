@@ -6,7 +6,9 @@ class TaskStatus(str, Enum):
     NOT_STARTED = "Not started"
     DOWNLOADING_DATA = "Downloading data"
     MODEL_TRAINING = "Model training"
+    PREDICTING = "Predicting other items"
     COMPLETED = "Completed"
+    FAILED = "Failed"
 
 
 @dataclasses.dataclass
